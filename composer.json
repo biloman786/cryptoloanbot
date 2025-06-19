@@ -1,0 +1,5 @@
+{
+  "name": "telegram/loan-bot",
+  "description": "Simple PHP Telegram Loan Bot",
+  "require": {}
+}
