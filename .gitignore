@@ -1,0 +1,7 @@
+# Runtime conversation state
+users.json
+data/
+*.tmp
+
+# Local env
+.env

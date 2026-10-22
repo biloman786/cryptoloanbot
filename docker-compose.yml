@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  loanbot:
+    build: .
+    ports:
+      - "80:80"
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN:-YOUR_BOT_TOKEN}
+      - STATE_FILE=/var/www/html/data/users.json
+    volumes:
+      - loanbot-data:/var/www/html/data
+
+volumes:
+  loanbot-data:

